@@ -194,31 +194,50 @@ async def get_all_average_ratings():
     
 
 # ⚽ Select Teams
+import logging
+
+# Initialize logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ⚽ Select Teams (with Debugging)
 @app.post("/select_teams")
-async def select_teams(request: TeamSelectionRequest):
+async def select_teams(data: TeamSelectionRequest):
     try:
-        opponent_1_name = request.opponent_1_name
-        opponent_2_name = request.opponent_2_name
-        opponent_1_strength = request.opponent_1_strength
-        opponent_2_strength = request.opponent_2_strength
+        logger.info(f"🟢 Received team selection request: {data}")
+
+        opponent_1_name = data.opponent_1_name
+        opponent_2_name = data.opponent_2_name
+        opponent_1_strength = data.opponent_1_strength
+        opponent_2_strength = data.opponent_2_strength
 
         # 📥 Fetch all available players
         availability_query = supabase.table("player_availability").select("player_id").eq("available", True).execute()
+        logger.info(f"📋 Available Players Query Result: {availability_query.data}")
+
         if not availability_query.data:
+            logger.warning("❌ Not enough available players")
             return {"message": "❌ Not enough available players"}
 
         available_player_ids = [player["player_id"] for player in availability_query.data]
+        logger.info(f"🔢 Available Player IDs: {available_player_ids}")
 
         # 📥 Fetch players' details
         players_query = supabase.table("players").select("id", "name", "position", "foot", "goalkeeper").in_("id", available_player_ids).execute()
+        logger.info(f"📋 Players Query Result: {players_query.data}")
+
         if not players_query.data:
+            logger.warning("❌ No player data available")
             return {"message": "❌ No player data available"}
 
         players = players_query.data
 
         # 📥 Fetch players' ratings
         ratings_query = supabase.table("player_ratings").select("player_id", "attack_skill", "defense_skill", "passing", "attitude", "teamwork").in_("player_id", available_player_ids).execute()
+        logger.info(f"📋 Ratings Query Result: {ratings_query.data}")
+
         if not ratings_query.data:
+            logger.warning("❌ No ratings available")
             return {"message": "❌ No ratings available"}
 
         ratings_dict = {}
@@ -250,13 +269,15 @@ async def select_teams(request: TeamSelectionRequest):
             else:
                 player["ability"] = 0  # Fallback for players with no ratings
 
+        logger.info(f"🎯 Players Sorted by Ability: {players}")
+
         # 📊 Sort players by ability (descending order)
         players_sorted = sorted(players, key=lambda x: x["ability"], reverse=True)
+        logger.info(f"📊 Sorted Players: {players_sorted}")
 
         # 📌 Determine team selection strategy
         total_players = len(players_sorted)
         players_per_team = total_players // 2
-
         team1, team2 = [], []
 
         if abs(opponent_1_strength - opponent_2_strength) >= 2:
@@ -295,22 +316,23 @@ async def select_teams(request: TeamSelectionRequest):
         team1_avg = calculate_team_averages(team1)
         team2_avg = calculate_team_averages(team2)
 
-        return {
-            "teams": {
-                opponent_1_name: {
-                    "players": [{"name": p["name"], "position": p["position"], "goalkeeper": p["goalkeeper"]} for p in team1],
-                    "average_ability": round(team1_avg["average_ability"], 2)
-                },
-                opponent_2_name: {
-                    "players": [{"name": p["name"], "position": p["position"], "goalkeeper": p["goalkeeper"]} for p in team2],
-                    "average_ability": round(team2_avg["average_ability"], 2)
-                }
+        teams = {
+            opponent_1_name: {
+                "players": [{"name": p["name"], "position": p["position"], "goalkeeper": p["goalkeeper"]} for p in team1],
+                "average_ability": round(team1_avg["average_ability"], 2)
+            },
+            opponent_2_name: {
+                "players": [{"name": p["name"], "position": p["position"], "goalkeeper": p["goalkeeper"]} for p in team2],
+                "average_ability": round(team2_avg["average_ability"], 2)
             }
         }
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error in team selection: {str(e)}")
+        logger.info(f"🏆 Final Teams: {teams}")
+        return {"teams": teams}
 
+    except Exception as e:
+        logger.error(f"❌ Error in team selection: {e}")
+        raise HTTPException(status_code=500, detail="Team selection failed.")
 
 
 # 🔥 Run FastAPI Server
