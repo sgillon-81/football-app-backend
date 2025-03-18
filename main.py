@@ -193,14 +193,13 @@ async def get_all_average_ratings():
         raise HTTPException(status_code=500, detail=f"❌ Error fetching average ratings: {str(e)}")
     
 
-# ⚽ Select Teams
+# ⚽ Select Teams (with Debugging & Equal Team Handling)
 import logging
 
 # Initialize logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ⚽ Select Teams (with Debugging)
 @app.post("/select_teams")
 async def select_teams(data: TeamSelectionRequest):
     try:
@@ -220,12 +219,9 @@ async def select_teams(data: TeamSelectionRequest):
             return {"message": "❌ Not enough available players"}
 
         available_player_ids = [player["player_id"] for player in availability_query.data]
-        logger.info(f"🔢 Available Player IDs: {available_player_ids}")
 
         # 📥 Fetch players' details
         players_query = supabase.table("players").select("id", "name", "position", "foot", "goalkeeper").in_("id", available_player_ids).execute()
-        logger.info(f"📋 Players Query Result: {players_query.data}")
-
         if not players_query.data:
             logger.warning("❌ No player data available")
             return {"message": "❌ No player data available"}
@@ -234,8 +230,6 @@ async def select_teams(data: TeamSelectionRequest):
 
         # 📥 Fetch players' ratings
         ratings_query = supabase.table("player_ratings").select("player_id", "attack_skill", "defense_skill", "passing", "attitude", "teamwork").in_("player_id", available_player_ids).execute()
-        logger.info(f"📋 Ratings Query Result: {ratings_query.data}")
-
         if not ratings_query.data:
             logger.warning("❌ No ratings available")
             return {"message": "❌ No ratings available"}
@@ -269,8 +263,6 @@ async def select_teams(data: TeamSelectionRequest):
             else:
                 player["ability"] = 0  # Fallback for players with no ratings
 
-        logger.info(f"🎯 Players Sorted by Ability: {players}")
-
         # 📊 Sort players by ability (descending order)
         players_sorted = sorted(players, key=lambda x: x["ability"], reverse=True)
         logger.info(f"📊 Sorted Players: {players_sorted}")
@@ -278,6 +270,7 @@ async def select_teams(data: TeamSelectionRequest):
         # 📌 Determine team selection strategy
         total_players = len(players_sorted)
         players_per_team = total_players // 2
+
         team1, team2 = [], []
 
         if abs(opponent_1_strength - opponent_2_strength) >= 2:
@@ -285,6 +278,7 @@ async def select_teams(data: TeamSelectionRequest):
             strong_team, weak_team = (team1, team2) if opponent_1_strength > opponent_2_strength else (team2, team1)
             strong_team.extend(players_sorted[:players_per_team])
             weak_team.extend(players_sorted[players_per_team:])
+        
         elif abs(opponent_1_strength - opponent_2_strength) == 1:
             # One opponent is slightly stronger
             top_half = players_sorted[:players_per_team]
@@ -299,13 +293,14 @@ async def select_teams(data: TeamSelectionRequest):
                     team1.append(bottom_half[i])
                 else:
                     team2.append(bottom_half[i])
+        
         else:
             # Teams should be evenly balanced
-            while players_sorted:
-                if len(team1) < players_per_team:
-                    team1.append(players_sorted.pop(0))
-                if len(team2) < players_per_team:
-                    team2.append(players_sorted.pop(0))
+            for i, player in enumerate(players_sorted):
+                if i % 2 == 0:
+                    team1.append(player)
+                else:
+                    team2.append(player)
 
         # 📊 Compute team averages
         def calculate_team_averages(team):
@@ -333,6 +328,7 @@ async def select_teams(data: TeamSelectionRequest):
     except Exception as e:
         logger.error(f"❌ Error in team selection: {e}")
         raise HTTPException(status_code=500, detail="Team selection failed.")
+
 
 
 # 🔥 Run FastAPI Server
