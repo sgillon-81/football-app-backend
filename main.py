@@ -99,16 +99,26 @@ async def update_availability(player_name: str, availability: AvailabilityUpdate
 
         player_id = player_lookup.data[0]["id"]  # Extract player ID
 
-        # ✅ Store availability status in `player_availability` table
-        response = supabase.table("player_availability").upsert({
-            "player_id": player_id,
-            "available": availability.available
-        }).execute()
+        # 🔍 Check if the player already has an availability record
+        existing_record = supabase.table("player_availability").select("player_id").eq("player_id", player_id).execute()
+
+        if existing_record.data:
+            # ✅ If exists, UPDATE the existing record
+            response = supabase.table("player_availability").update({
+                "available": availability.available
+            }).eq("player_id", player_id).execute()
+        else:
+            # ✅ If not exists, INSERT a new record
+            response = supabase.table("player_availability").insert({
+                "player_id": player_id,
+                "available": availability.available
+            }).execute()
 
         return {"message": f"✅ Availability updated for {player_name}", "data": response.data}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"❌ Error updating availability: {str(e)}")
+
 
 # 🔍 Fetch Player Availability
 @app.get("/players/{player_name}/availability")
@@ -128,7 +138,7 @@ async def get_availability(player_name: str):
         if not availability_query.data:
             return {"player_name": player_name, "available": False}  # Default to unavailable
 
-        return {"player_name": player_name, "available": availability_query.data[0]["available"]}
+        return {"player_name": player_name, "available": bool(availability_query.data[0]["available"])}  # ✅ Ensure boolean
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"❌ Error fetching availability: {str(e)}")
@@ -300,6 +310,8 @@ async def select_teams(request: TeamSelectionRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error in team selection: {str(e)}")
+
+
 
 # 🔥 Run FastAPI Server
 if __name__ == "__main__":
