@@ -210,7 +210,7 @@ async def select_teams(data: TeamSelectionRequest):
         opponent_1_strength = data.opponent_1_strength
         opponent_2_strength = data.opponent_2_strength
 
-        # 📥 Fetch all available players
+        # 📅 Fetch all available players
         availability_query = supabase.table("player_availability").select("player_id").eq("available", True).execute()
         logger.info(f"📋 Available Players Query Result: {availability_query.data}")
 
@@ -220,7 +220,7 @@ async def select_teams(data: TeamSelectionRequest):
 
         available_player_ids = [player["player_id"] for player in availability_query.data]
 
-        # 📥 Fetch players' details
+        # 📅 Fetch players' details
         players_query = supabase.table("players").select("id", "name", "position", "foot", "goalkeeper").in_("id", available_player_ids).execute()
         if not players_query.data:
             logger.warning("❌ No player data available")
@@ -228,7 +228,7 @@ async def select_teams(data: TeamSelectionRequest):
 
         players = players_query.data
 
-        # 📥 Fetch players' ratings
+        # 📅 Fetch players' ratings
         ratings_query = supabase.table("player_ratings").select("player_id", "attack_skill", "defense_skill", "passing", "attitude", "teamwork").in_("player_id", available_player_ids).execute()
         if not ratings_query.data:
             logger.warning("❌ No ratings available")
@@ -278,7 +278,7 @@ async def select_teams(data: TeamSelectionRequest):
             strong_team, weak_team = (team1, team2) if opponent_1_strength > opponent_2_strength else (team2, team1)
             strong_team.extend(players_sorted[:players_per_team])
             weak_team.extend(players_sorted[players_per_team:])
-        
+
         elif abs(opponent_1_strength - opponent_2_strength) == 1:
             # One opponent is slightly stronger
             top_half = players_sorted[:players_per_team]
@@ -293,7 +293,7 @@ async def select_teams(data: TeamSelectionRequest):
                     team1.append(bottom_half[i])
                 else:
                     team2.append(bottom_half[i])
-        
+
         else:
             # Teams should be evenly balanced
             for i, player in enumerate(players_sorted):
@@ -310,6 +310,15 @@ async def select_teams(data: TeamSelectionRequest):
 
         team1_avg = calculate_team_averages(team1)
         team2_avg = calculate_team_averages(team2)
+
+        # ✅ Sort team output by position then name
+        position_order = {"defender": 0, "midfielder": 1, "forward": 2}
+
+        def sort_team(team):
+            return sorted(team, key=lambda p: (position_order.get(p["position"], 99), p["name"]))
+
+        team1 = sort_team(team1)
+        team2 = sort_team(team2)
 
         teams = {
             opponent_1_name: {
@@ -328,6 +337,7 @@ async def select_teams(data: TeamSelectionRequest):
     except Exception as e:
         logger.error(f"❌ Error in team selection: {e}")
         raise HTTPException(status_code=500, detail="Team selection failed.")
+
 
 
 
