@@ -236,6 +236,94 @@ async def get_coaches(team_name: Optional[str] = Query(None)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ✅ Now top-level — this fixes the 404!
+@app.post("/select_teams")
+async def select_teams(data: TeamSelectionRequest):
+    try:
+        # 1. Get list of available players for the selected team
+        available_query = supabase.table("player_availability").select("player_id").eq("available", True).execute()
+        available_ids = [x["player_id"] for x in available_query.data]
+
+        players_query = supabase.table("players").select("*").in_("id", available_ids).eq("team_name", data.team_name).execute()
+        players = players_query.data or []
+
+        if len(players) < 2:
+            return {
+                "message": "❌ Not enough available players to form two teams",
+                "teams": {},
+                "average_ability": None
+            }
+
+        # 2. Get player ratings
+        ratings_query = supabase.table("player_ratings").select("*").in_("player_id", available_ids).execute()
+        ratings_dict = {}
+        for r in ratings_query.data:
+            pid = r["player_id"]
+            ratings_dict.setdefault(pid, {"attack_skill": [], "defense_skill": [], "passing": [], "attitude": [], "teamwork": []})
+            for key in ratings_dict[pid]:
+                ratings_dict[pid][key].append(r[key])
+
+        for player in players:
+            pid = player["id"]
+            if pid in ratings_dict:
+                for key in ratings_dict[pid]:
+                    player[key] = sum(ratings_dict[pid][key]) / len(ratings_dict[pid][key])
+                player["ability"] = (
+                    max(player["attack_skill"], player["defense_skill"]) +
+                    player["passing"] + player["attitude"] + player["teamwork"]
+                )
+            else:
+                player["ability"] = 0  # Fallback if no ratings
+
+        # 3. Sort and assign players
+        players_sorted = sorted(players, key=lambda p: p["ability"], reverse=True)
+        team1, team2 = [], []
+        players_per_team = len(players_sorted) // 2
+
+        if abs(data.opponent_1_strength - data.opponent_2_strength) >= 2:
+            strong, weak = (team1, team2) if data.opponent_1_strength > data.opponent_2_strength else (team2, team1)
+            strong.extend(players_sorted[:players_per_team])
+            weak.extend(players_sorted[players_per_team:])
+        elif abs(data.opponent_1_strength - data.opponent_2_strength) == 1:
+            top = players_sorted[:players_per_team]
+            bottom = players_sorted[players_per_team:]
+            for i in range(players_per_team):
+                (team1 if i < players_per_team * 0.66 else team2).append(top[i])
+            for i in range(players_per_team):
+                (team1 if i < players_per_team * 0.33 else team2).append(bottom[i])
+        else:
+            for i, p in enumerate(players_sorted):
+                (team1 if i % 2 == 0 else team2).append(p)
+
+        def sort_team(team): 
+            return sorted(team, key=lambda p: (
+                {"defender": 0, "midfielder": 1, "forward": 2}.get(p["position"], 99),
+                p["name"]
+            ))
+
+        def avg(team): return round(sum(p["ability"] for p in team) / len(team), 2) if team else 0
+
+        return {
+            "message": "✅ Teams generated",
+            "teams": {
+                data.opponent_1_name: {
+                    "players": [{"name": p["name"], "position": p["position"], "goalkeeper": p["goalkeeper"]} for p in sort_team(team1)],
+                    "average_ability": avg(team1)
+                },
+                data.opponent_2_name: {
+                    "players": [{"name": p["name"], "position": p["position"], "goalkeeper": p["goalkeeper"]} for p in sort_team(team2)],
+                    "average_ability": avg(team2)
+                }
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Error in team selection: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
 # 🔥 Entrypoint
 if __name__ == "__main__":
     import uvicorn
