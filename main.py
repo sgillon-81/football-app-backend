@@ -1,17 +1,20 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
+from typing import Literal, Optional, List
+from uuid import UUID
 import os
+import logging
+from datetime import date
 
-# 🔗 Supabase connection (Replace with your actual credentials)
+# 🔗 Supabase connection
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://izwwqzpvnrijarabwink.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml6d3dxenB2bnJpamFyYWJ3aW5rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDIxNjA0MTIsImV4cCI6MjA1NzczNjQxMn0.FoB5Zp-NTlJf74VG4NgZ_j0s-n85JHdbdQr425suaQI")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ✅ FastAPI app & CORS
 app = FastAPI()
-
-# ✅ CORS Middleware (Allow frontend access)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,15 +23,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🎯 Data Models
+# 🎯 Logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ✅ Constants
+TeamName = Literal["Peebles 2013s", "Peebles 2014s", "Peebles 2015s", "Peebles 2016s"]
+Positions = Literal["GK", "Def", "LB", "RB", "Mid", "LW", "RW", "Fwd"]
+
+# ✅ Models
 class Player(BaseModel):
     name: str
     position: str = Field(..., pattern="^(midfielder|forward|defender)$")
     foot: str = Field(..., pattern="^(left|right|both)$")
     goalkeeper: bool
+    team_name: TeamName
 
 class PlayerRating(BaseModel):
-    coach: str
+    coach_id: UUID
     attack_skill: int
     defense_skill: int
     passing: int
@@ -43,305 +55,188 @@ class TeamSelectionRequest(BaseModel):
     opponent_2_name: str
     opponent_1_strength: int
     opponent_2_strength: int
+    team_name: TeamName
 
-# ✅ Root Endpoint
+class Coach(BaseModel):
+    forename: str
+    surname: str
+    team_name: TeamName
+
+class MatchCreate(BaseModel):
+    team_name: TeamName
+    coach_id: UUID
+    opponent: str
+    date: date
+    home_or_away: Literal["Home", "Away"]
+    game_comments: Optional[str] = None
+    areas_for_dev: Optional[List[str]] = []
+
+class MatchPlayerStat(BaseModel):
+    player_id: int
+    coach_id: UUID
+    primary_position: Positions
+    minutes_played: Optional[int] = None
+    rating: Optional[int] = None
+    crucial_tackles: Optional[int] = 0
+    assists: Optional[int] = 0
+    goals: Optional[int] = 0
+    comments: Optional[str] = None
+    outstanding_performance: Optional[bool] = False
+
+class MatchWithStats(BaseModel):
+    match: MatchCreate
+    player_stats: List[MatchPlayerStat]
+
+# ✅ Root
 @app.get("/")
 async def root():
     return {"message": "Football Team API is running!"}
 
-# 🔍 View all players
+# 🔍 Players
 @app.get("/players")
-async def get_players():
+async def get_players(team_name: Optional[str] = Query(None)):
     try:
-        response = supabase.table("players").select("*").execute()
-        return response.data
+        query = supabase.table("players").select("*")
+        if team_name:
+            query = query.eq("team_name", team_name)
+        response = query.execute()
+        return sorted(response.data, key=lambda p: p["name"])
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching players: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# ➕ Add a new player
 @app.post("/players")
 async def add_player(player: Player):
     try:
         response = supabase.table("players").insert(player.dict()).execute()
-        return {"message": "✅ Player added successfully", "player": response.data}
+        return {"message": "✅ Player added", "player": response.data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"❌ Error adding player: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# 🏆 Add or Update Player Ratings
 @app.post("/players/{player_name}/ratings")
 async def add_or_update_rating(player_name: str, rating: PlayerRating):
     try:
         player_lookup = supabase.table("players").select("id").eq("name", player_name).execute()
         if not player_lookup.data:
-            raise HTTPException(status_code=404, detail=f"❌ Player '{player_name}' not found.")
-
+            raise HTTPException(status_code=404, detail="Player not found")
         player_id = player_lookup.data[0]["id"]
 
-        existing_rating = supabase.table("player_ratings").select("*").eq("player_id", player_id).eq("coach", rating.coach).execute()
-        if existing_rating.data:
-            response = supabase.table("player_ratings").update(rating.dict()).eq("player_id", player_id).eq("coach", rating.coach).execute()
-            return {"message": f"✅ Rating updated for '{player_name}' by {rating.coach}", "data": response.data}
-        else:
-            response = supabase.table("player_ratings").insert({**rating.dict(), "player_id": player_id}).execute()
-            return {"message": f"✅ Rating added for '{player_name}' by {rating.coach}", "data": response.data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"❌ Error adding/updating rating: {str(e)}")
+        coach_lookup = supabase.table("coaches").select("id").eq("id", str(rating.coach_id)).execute()
+        if not coach_lookup.data:
+            raise HTTPException(status_code=404, detail="Coach not found")
 
-# 🔄 Update player availability (FIXED)
+        existing = supabase.table("player_ratings") \
+            .select("*") \
+            .eq("player_id", player_id) \
+            .eq("coach_id", str(rating.coach_id)) \
+            .execute()
+
+        payload = {**rating.dict(), "player_id": player_id}
+        if existing.data:
+            response = supabase.table("player_ratings").update(payload).eq("player_id", player_id).eq("coach_id", str(rating.coach_id)).execute()
+        else:
+            response = supabase.table("player_ratings").insert(payload).execute()
+
+        return {"message": "✅ Rating submitted", "data": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 🔄 Availability
 @app.put("/players/{player_name}/availability")
 async def update_availability(player_name: str, availability: AvailabilityUpdate):
     try:
-        # 🔍 Find the player by name
         player_lookup = supabase.table("players").select("id").eq("name", player_name).execute()
-
         if not player_lookup.data:
-            raise HTTPException(status_code=404, detail=f"❌ Player '{player_name}' not found.")
+            raise HTTPException(status_code=404, detail="Player not found")
+        player_id = player_lookup.data[0]["id"]
 
-        player_id = player_lookup.data[0]["id"]  # Extract player ID
-
-        # 🔍 Check if the player already has an availability record
-        existing_record = supabase.table("player_availability").select("player_id").eq("player_id", player_id).execute()
-
-        if existing_record.data:
-            # ✅ If exists, UPDATE the existing record
-            response = supabase.table("player_availability").update({
-                "available": availability.available
-            }).eq("player_id", player_id).execute()
+        exists = supabase.table("player_availability").select("*").eq("player_id", player_id).execute()
+        if exists.data:
+            response = supabase.table("player_availability").update({"available": availability.available}).eq("player_id", player_id).execute()
         else:
-            # ✅ If not exists, INSERT a new record
-            response = supabase.table("player_availability").insert({
-                "player_id": player_id,
-                "available": availability.available
-            }).execute()
+            response = supabase.table("player_availability").insert({"player_id": player_id, "available": availability.available}).execute()
 
-        return {"message": f"✅ Availability updated for {player_name}", "data": response.data}
-
+        return {"message": "✅ Availability updated", "data": response.data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"❌ Error updating availability: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-# 🔍 Fetch Player Availability
 @app.get("/players/{player_name}/availability")
 async def get_availability(player_name: str):
     try:
-        # 🔎 Find player by name
         player_lookup = supabase.table("players").select("id").eq("name", player_name).execute()
-
         if not player_lookup.data:
-            raise HTTPException(status_code=404, detail=f"❌ Player '{player_name}' not found.")
-
+            raise HTTPException(status_code=404, detail="Player not found")
         player_id = player_lookup.data[0]["id"]
 
-        # 🔍 Fetch availability status
-        availability_query = supabase.table("player_availability").select("available").eq("player_id", player_id).execute()
-
-        if not availability_query.data:
-            return {"player_name": player_name, "available": False}  # Default to unavailable
-
-        return {"player_name": player_name, "available": bool(availability_query.data[0]["available"])}  # ✅ Ensure boolean
-
+        availability = supabase.table("player_availability").select("available").eq("player_id", player_id).execute()
+        return {"player_name": player_name, "available": bool(availability.data[0]["available"])} if availability.data else {"player_name": player_name, "available": False}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"❌ Error fetching availability: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    
-# Average Ratings
-@app.get("/average_ratings")
-async def get_all_average_ratings():
+# 🧠 Matches with player stats
+@app.post("/matches")
+async def create_match_with_stats(payload: MatchWithStats):
     try:
-        # 🏆 Fetch all ratings from the database
-        ratings_response = supabase.table("player_ratings").select(
-            "player_id", "attack_skill", "defense_skill", "passing", "attitude", "teamwork"
-        ).execute()
+        match = payload.match
+        player_stats = payload.player_stats
 
-        if not ratings_response.data:
-            return []  # ✅ Return an empty list instead of crashing
+        logger.info(f"📦 Match received: {match}")
+        logger.info(f"👥 Player stats received: {player_stats}")
 
-        # 🏆 Fetch player names from the database
-        players_response = supabase.table("players").select("id", "name").execute()
-        player_map = {p["id"]: p["name"] for p in players_response.data}
+        # Check if match already exists
+        existing = supabase.table("matches").select("id") \
+            .eq("team_name", match.team_name) \
+            .eq("opponent", match.opponent) \
+            .eq("date", match.date).execute()
 
-        player_ratings = {}
-
-        # 🎯 Aggregate player ratings
-        for rating in ratings_response.data:
-            player_id = rating["player_id"]
-            if player_id not in player_ratings:
-                player_ratings[player_id] = {
-                    "total": {"attack_skill": 0, "defense_skill": 0, "passing": 0, "attitude": 0, "teamwork": 0},
-                    "count": 0
-                }
-
-            # Sum all ratings
-            for key in ["attack_skill", "defense_skill", "passing", "attitude", "teamwork"]:
-                player_ratings[player_id]["total"][key] += rating[key]
-
-            player_ratings[player_id]["count"] += 1  # Increment count
-
-        # 🎯 Compute averages safely
-        average_ratings = []
-        for player_id, data in player_ratings.items():
-            avg = {key: round(value / max(1, data["count"]), 1) for key, value in data["total"].items()}
-            avg["name"] = player_map.get(player_id, "Unknown Player")  # Get player name
-            avg["overall_ability"] = round(
-                max(avg["attack_skill"], avg["defense_skill"]) + avg["passing"] + avg["attitude"] + avg["teamwork"], 2
-            )
-            average_ratings.append(avg)
-
-        return average_ratings  # ✅ Return the structured list
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"❌ Error fetching average ratings: {str(e)}")
-    
-
-# ⚽ Select Teams (with Debugging & Equal Team Handling)
-import logging
-
-# Initialize logger
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-@app.post("/select_teams")
-async def select_teams(data: TeamSelectionRequest):
-    try:
-        logger.info(f"🟢 Received team selection request: {data}")
-
-        opponent_1_name = data.opponent_1_name
-        opponent_2_name = data.opponent_2_name
-        opponent_1_strength = data.opponent_1_strength
-        opponent_2_strength = data.opponent_2_strength
-
-        # 📅 Fetch all available players
-        availability_query = supabase.table("player_availability").select("player_id").eq("available", True).execute()
-        logger.info(f"📋 Available Players Query Result: {availability_query.data}")
-
-        if not availability_query.data:
-            logger.warning("❌ Not enough available players")
-            return {"message": "❌ Not enough available players"}
-
-        available_player_ids = [player["player_id"] for player in availability_query.data]
-
-        # 📅 Fetch players' details
-        players_query = supabase.table("players").select("id", "name", "position", "foot", "goalkeeper").in_("id", available_player_ids).execute()
-        if not players_query.data:
-            logger.warning("❌ No player data available")
-            return {"message": "❌ No player data available"}
-
-        players = players_query.data
-
-        # 📅 Fetch players' ratings
-        ratings_query = supabase.table("player_ratings").select("player_id", "attack_skill", "defense_skill", "passing", "attitude", "teamwork").in_("player_id", available_player_ids).execute()
-        if not ratings_query.data:
-            logger.warning("❌ No ratings available")
-            return {"message": "❌ No ratings available"}
-
-        ratings_dict = {}
-        for rating in ratings_query.data:
-            player_id = rating["player_id"]
-            if player_id not in ratings_dict:
-                ratings_dict[player_id] = {"attack_skill": [], "defense_skill": [], "passing": [], "attitude": [], "teamwork": []}
-            for key in ["attack_skill", "defense_skill", "passing", "attitude", "teamwork"]:
-                ratings_dict[player_id][key].append(rating[key])
-
-        # 🎯 Compute average ratings for each player
-        for player_id in ratings_dict:
-            for key in ratings_dict[player_id]:
-                ratings_dict[player_id][key] = sum(ratings_dict[player_id][key]) / len(ratings_dict[player_id][key])
-
-        # 🎯 Assign ability score
-        for player in players:
-            player_id = player["id"]
-            if player_id in ratings_dict:
-                player["attack_skill"] = ratings_dict[player_id]["attack_skill"]
-                player["defense_skill"] = ratings_dict[player_id]["defense_skill"]
-                player["passing"] = ratings_dict[player_id]["passing"]
-                player["attitude"] = ratings_dict[player_id]["attitude"]
-                player["teamwork"] = ratings_dict[player_id]["teamwork"]
-                player["ability"] = (
-                    max(player["attack_skill"], player["defense_skill"]) +
-                    player["passing"] + player["attitude"] + player["teamwork"]
-                )
-            else:
-                player["ability"] = 0  # Fallback for players with no ratings
-
-        # 📊 Sort players by ability (descending order)
-        players_sorted = sorted(players, key=lambda x: x["ability"], reverse=True)
-        logger.info(f"📊 Sorted Players: {players_sorted}")
-
-        # 📌 Determine team selection strategy
-        total_players = len(players_sorted)
-        players_per_team = total_players // 2
-
-        team1, team2 = [], []
-
-        if abs(opponent_1_strength - opponent_2_strength) >= 2:
-            # One opponent is much stronger
-            strong_team, weak_team = (team1, team2) if opponent_1_strength > opponent_2_strength else (team2, team1)
-            strong_team.extend(players_sorted[:players_per_team])
-            weak_team.extend(players_sorted[players_per_team:])
-
-        elif abs(opponent_1_strength - opponent_2_strength) == 1:
-            # One opponent is slightly stronger
-            top_half = players_sorted[:players_per_team]
-            bottom_half = players_sorted[players_per_team:]
-            for i in range(players_per_team):
-                if i < int(players_per_team * 0.66):
-                    team1.append(top_half[i])
-                else:
-                    team2.append(top_half[i])
-            for i in range(players_per_team):
-                if i < int(players_per_team * 0.33):
-                    team1.append(bottom_half[i])
-                else:
-                    team2.append(bottom_half[i])
-
+        if existing.data:
+            match_id = existing.data[0]["id"]
+            logger.info(f"🔁 Reusing existing match ID: {match_id}")
         else:
-            # Teams should be evenly balanced
-            for i, player in enumerate(players_sorted):
-                if i % 2 == 0:
-                    team1.append(player)
-                else:
-                    team2.append(player)
+            # Serialize UUID and date to strings
+            match_data = match.dict(exclude={"coach_id"})  # ✅ Exclude coach_id from match insert
+            match_data["date"] = match_data["date"].isoformat()
 
-        # 📊 Compute team averages
-        def calculate_team_averages(team):
-            return {
-                "average_ability": sum(p["ability"] for p in team) / len(team) if team else 0
-            }
+            match_insert = supabase.table("matches").insert(match_data).execute()
+            match_id = match_insert.data[0]["id"]
+            logger.info(f"🆕 Created new match ID: {match_id}")
 
-        team1_avg = calculate_team_averages(team1)
-        team2_avg = calculate_team_averages(team2)
+        # Add player stats
+        for stat in player_stats:
+            stat_data = stat.dict()
+            stat_data["match_id"] = match_id
+            stat_data["coach_id"] = str(stat_data["coach_id"])
+            supabase.table("match_player_stats").insert(stat_data).execute()
 
-        # ✅ Sort team output by position then name
-        position_order = {"defender": 0, "midfielder": 1, "forward": 2}
-
-        def sort_team(team):
-            return sorted(team, key=lambda p: (position_order.get(p["position"], 99), p["name"]))
-
-        team1 = sort_team(team1)
-        team2 = sort_team(team2)
-
-        teams = {
-            opponent_1_name: {
-                "players": [{"name": p["name"], "position": p["position"], "goalkeeper": p["goalkeeper"]} for p in team1],
-                "average_ability": round(team1_avg["average_ability"], 2)
-            },
-            opponent_2_name: {
-                "players": [{"name": p["name"], "position": p["position"], "goalkeeper": p["goalkeeper"]} for p in team2],
-                "average_ability": round(team2_avg["average_ability"], 2)
-            }
-        }
-
-        logger.info(f"🏆 Final Teams: {teams}")
-        return {"teams": teams}
+        return {"message": "✅ Match and stats submitted", "match_id": match_id}
 
     except Exception as e:
-        logger.error(f"❌ Error in team selection: {e}")
-        raise HTTPException(status_code=500, detail="Team selection failed.")
+        logger.error(f"❌ Error submitting match and stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
 
-# 🔥 Run FastAPI Server
+# 👤 Coach management
+@app.post("/coaches")
+async def add_coach(coach: Coach):
+    try:
+        response = supabase.table("coaches").insert(coach.dict()).execute()
+        return {"message": "✅ Coach added", "coach": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/coaches")
+async def get_coaches(team_name: Optional[str] = Query(None)):
+    try:
+        query = supabase.table("coaches").select("*")
+        if team_name:
+            query = query.eq("team_name", team_name)
+        response = query.execute()
+        return sorted(response.data, key=lambda c: (c["surname"], c["forename"]))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 🔥 Entrypoint
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
