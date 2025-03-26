@@ -8,30 +8,37 @@ import os
 import logging
 from datetime import date
 
-# 🔗 Supabase connection
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://izwwqzpvnrijarabwink.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml6d3dxenB2bnJpamFyYWJ3aW5rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDIxNjA0MTIsImV4cCI6MjA1NzczNjQxMn0.FoB5Zp-NTlJf74VG4NgZ_j0s-n85JHdbdQr425suaQI")
+
+# Supabase connection
+# Hardcoded Supabase connection
+SUPABASE_URL = "https://izwwqzpvnrijarabwink.supabase.co"  # Replace with your actual Supabase URL
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml6d3dxenB2bnJpamFyYWJ3aW5rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDIxNjA0MTIsImV4cCI6MjA1NzczNjQxMn0.FoB5Zp-NTlJf74VG4NgZ_j0s-n85JHdbdQr425suaQI"  # Replace with your actual Supabase key
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ✅ FastAPI app & CORS
+
+# FastAPI app & CORS
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://football-ui-gold.vercel.app",  # Replace with your actual frontend URL on Vercel
+        "http://localhost:5173",              # Your local frontend during development
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allow all headers
 )
 
-# 🎯 Logger
+
+# Logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ✅ Constants
+# Constants
 TeamName = Literal["Peebles 2013s", "Peebles 2014s", "Peebles 2015s", "Peebles 2016s"]
 Positions = Literal["GK", "Def", "LB", "RB", "Mid", "LW", "RW", "Fwd"]
 
-# ✅ Models
+# Models
 class Player(BaseModel):
     name: str
     position: str = Field(..., pattern="^(midfielder|forward|defender)$")
@@ -87,12 +94,21 @@ class MatchWithStats(BaseModel):
     match: MatchCreate
     player_stats: List[MatchPlayerStat]
 
-# ✅ Root
+# Root endpoint (public)
 @app.get("/")
 async def root():
     return {"message": "Football Team API is running!"}
 
-# 🔍 Players
+# Test Supabase connection (public)
+@app.get("/test-supabase")
+async def test_supabase():
+    try:
+        response = supabase.table("users").select("username", "forename", "surname").limit(5).execute()
+        return {"message": "✅ Supabase connection successful", "users": response.data}
+    except Exception as e:
+        return {"message": "❌ Supabase connection failed", "error": str(e)}
+
+# Players endpoints (public)
 @app.get("/players")
 async def get_players(team_name: Optional[str] = Query(None)):
     try:
@@ -115,6 +131,8 @@ async def add_player(player: Player):
 @app.post("/players/{player_name}/ratings")
 async def add_or_update_rating(player_name: str, rating: PlayerRating):
     try:
+        logger.info(f"🧪 Received rating for player: {player_name}, coach_id: {rating.coach_id}")
+        
         player_lookup = supabase.table("players").select("id").eq("name", player_name).execute()
         if not player_lookup.data:
             raise HTTPException(status_code=404, detail="Player not found")
@@ -124,23 +142,37 @@ async def add_or_update_rating(player_name: str, rating: PlayerRating):
         if not coach_lookup.data:
             raise HTTPException(status_code=404, detail="Coach not found")
 
-        existing = supabase.table("player_ratings") \
-            .select("*") \
-            .eq("player_id", player_id) \
-            .eq("coach_id", str(rating.coach_id)) \
-            .execute()
+        existing = supabase.table("player_ratings").select("*") \
+            .eq("player_id", player_id).eq("coach_id", str(rating.coach_id)).execute()
 
-        payload = {**rating.dict(), "player_id": player_id}
+        payload = {
+            "player_id": player_id,
+            "coach_id": str(rating.coach_id),
+            "attack_skill": rating.attack_skill,
+            "defense_skill": rating.defense_skill,
+            "passing": rating.passing,
+            "attitude": rating.attitude,
+            "teamwork": rating.teamwork
+        }
+
+        logger.info(f"📤 Prepared payload for rating: {payload}")
+
         if existing.data:
-            response = supabase.table("player_ratings").update(payload).eq("player_id", player_id).eq("coach_id", str(rating.coach_id)).execute()
+            logger.info("🔁 Updating existing rating...")
+            response = supabase.table("player_ratings").update(payload) \
+                .eq("player_id", player_id).eq("coach_id", str(rating.coach_id)).execute()
         else:
+            logger.info("🆕 Inserting new rating...")
             response = supabase.table("player_ratings").insert(payload).execute()
 
+        logger.info("✅ Rating saved successfully")
         return {"message": "✅ Rating submitted", "data": response.data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-# 🔄 Availability
+    except Exception as e:
+        logger.error(f"❌ Error submitting rating: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"❌ Error submitting rating: {str(e)}")
+
+# Availability endpoints
 @app.put("/players/{player_name}/availability")
 async def update_availability(player_name: str, availability: AvailabilityUpdate):
     try:
@@ -172,7 +204,7 @@ async def get_availability(player_name: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 🧠 Matches with player stats
+# Matches endpoints
 @app.post("/matches")
 async def create_match_with_stats(payload: MatchWithStats):
     try:
@@ -213,10 +245,7 @@ async def create_match_with_stats(payload: MatchWithStats):
         logger.error(f"❌ Error submitting match and stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-
-# 👤 Coach management
+# Coach management
 @app.post("/coaches")
 async def add_coach(coach: Coach):
     try:
@@ -236,7 +265,7 @@ async def get_coaches(team_name: Optional[str] = Query(None)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ✅ Now top-level — this fixes the 404!
+# Team selection
 @app.post("/select_teams")
 async def select_teams(data: TeamSelectionRequest):
     try:
@@ -320,9 +349,6 @@ async def select_teams(data: TeamSelectionRequest):
     except Exception as e:
         logger.error(f"❌ Error in team selection: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
 
 # 🔥 Entrypoint
 if __name__ == "__main__":

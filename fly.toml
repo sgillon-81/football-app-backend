@@ -16,7 +16,14 @@ primary_region = 'lhr'
   min_machines_running = 0
   processes = ['app']
 
+
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
+
+
+[env]
+SUPABASE_URL = "https://izwwqzpvnrijarabwink.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml6d3dxenB2bnJpamFyYWJ3aW5rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0MjE2MDQxMiwiZXhwIjoyMDU3NzM2NDEyfQ.EiYvT-MHp8lv1EOkuIch4mVitbPbdJhX-gBZ_HVB_fA"
+SECRET_KEY = "0e2d3e94cf8dd007070b4cbddc5a94b385b285f9c3f81ffe355c1454cdd45da8"
